@@ -4,6 +4,7 @@ from functools import partial as bind
 import elements
 import embodied
 import numpy as np
+from embodied.run.zeus_energy import make_monitor, energy_window, write_meta, block_until_ready
 
 
 def eval_only(make_agent, make_env, make_logger, args):
@@ -13,6 +14,19 @@ def eval_only(make_agent, make_env, make_logger, args):
   logger = make_logger()
 
   logdir = elements.Path(args.logdir)
+  # monitor energy usage if possible, but don't fail if it isn't available
+  monitor = make_monitor(enabled=True, gpu_indices=[0])
+  energy_logfile = logdir / "eco-profile.json"
+
+  write_meta(
+      logdir=logdir,
+      model_name="dreamerv3",
+      env_name="unknown",
+      task="unknown",
+      script="eval_only",
+      args=args,
+  )
+
   logdir.mkdir()
   print('Logdir', logdir)
   step = logger.step
@@ -61,7 +75,16 @@ def eval_only(make_agent, make_env, make_logger, args):
   cp.load(args.from_checkpoint, keys=['agent'])
 
   print('Start evaluation')
-  policy = lambda *args: agent.policy(*args, mode='eval')
+  #policy = lambda *args: agent.policy(*args, mode='eval')
+  def policy(*policy_args):
+    label = f"inference:step={int(step)}"
+    # measure energy usage during policy inference, blocking until ready to get accurate timing and energy measurements
+    # every evaluation policy call records one line like
+    #{"label": "inference:step=120", "joules": 3.42, "seconds": 0.18}
+    with energy_window(monitor, label, energy_logfile):
+        outs = agent.policy(*policy_args, mode='eval')
+        block_until_ready(outs)
+        return outs
   driver.reset(agent.init_policy)
   while step < args.steps:
     driver(policy, steps=10)

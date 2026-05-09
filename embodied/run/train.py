@@ -1,6 +1,6 @@
 import collections
 from functools import partial as bind
-
+from embodied.run.zeus_energy import make_monitor, energy_window, write_meta, block_until_ready
 import elements
 import embodied
 import numpy as np
@@ -13,6 +13,18 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
   logger = make_logger()
 
   logdir = elements.Path(args.logdir)
+  # monitor energy usage if possible, but don't fail if it isn't available
+  monitor = make_monitor(enabled=True, gpu_indices=[0])
+  energy_logfile = logdir / "eco-profile.json"
+
+  write_meta(
+      logdir=logdir,
+      model_name="dreamerv3",
+      env_name="unknown",
+      task="unknown",
+      script="train",
+      args=args,
+  )
   step = logger.step
   usage = elements.Usage(**args.usage)
   train_agg = elements.Agg()
@@ -73,7 +85,14 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     for _ in range(should_train(step)):
       with elements.timer.section('stream_next'):
         batch = next(stream_train)
-      carry_train[0], outs, mets = agent.train(carry_train[0], batch)
+      #carry_train[0], outs, mets = agent.train(carry_train[0], batch)
+      label = f"training:step={int(step)}"
+
+      with energy_window(monitor, label, energy_logfile):
+          # train the agent and block until ready to get accurate timing and energy measurements
+          carry_train[0], outs, mets = agent.train(carry_train[0], batch)
+          block_until_ready((carry_train[0], outs, mets))
+            
       train_fps.step(batch_steps)
       if 'replay' in outs:
         replay.update(outs['replay'])
